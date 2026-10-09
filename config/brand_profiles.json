@@ -1,0 +1,23 @@
+{
+  "samsung": {
+    "app_drawer_scroll": "horizontal",
+    "search_bar_pos": "top",
+    "back_button_ratio": [0.80, 0.97],
+    "recents_button_ratio": [0.20, 0.97],
+    "status_bar_height_ratio": 0.04
+  },
+  "xiaomi": {
+    "app_drawer_scroll": "vertical",
+    "search_bar_pos": "bottom",
+    "back_button_ratio": [0.20, 0.97],
+    "recents_button_ratio": [0.80, 0.97],
+    "status_bar_height_ratio": 0.035
+  },
+  "default": {
+    "app_drawer_scroll": "vertical",
+    "search_bar_pos": "bottom",
+    "back_button_ratio": [0.20, 0.97],
+    "recents_button_ratio": [0.80, 0.97],
+    "status_bar_height_ratio": 0.035
+  }
+}
