@@ -23,6 +23,10 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Auto-Accept Android SDK Licenses
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+
       - name: Install System Build Tools
         run: |
           sudo apt-get update
@@ -35,7 +39,21 @@ jobs:
 
       - name: Build Android Package
         run: |
-          buildozer android debug
+          # pexpect auto-accepts interactive prompts inside buildozer
+          python -c '
+          import pexpect, sys
+          child = pexpect.spawn("buildozer android debug", timeout=1800, encoding="utf-8")
+          child.logfile = sys.stdout
+          while True:
+              idx = child.expect([r"Accept\? \(y/N\):", r"\(y/N\)", pexpect.EOF, pexpect.TIMEOUT])
+              if idx in [0, 1]:
+                  child.sendline("y")
+              elif idx == 2:
+                  break
+              elif idx == 3:
+                  print("Timeout waiting for build step")
+                  break
+          '
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
