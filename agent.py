@@ -6,8 +6,8 @@ from core.device_profiler import DeviceProfiler
 from core.screen_pipeline import ScreenPipeline
 from core.motor_controller import MotorController
 from core.vision_brain import VisionBrain
+from core.voice_engine import VoiceEngine
 
-# Global emergency stop flag
 STOP_REQUESTED = False
 
 COMMON_APPS = {
@@ -55,49 +55,52 @@ def run_agent(goal, max_steps=15, callback=None):
             print(f"[Mira Agent] {msg}")
 
     profiler = DeviceProfiler()
+    if not profiler.check_bridge_alive():
+        log("Warning: ADB/Shell Bridge unresponsive. Check pairing/Shizuku.")
+
     info = profiler.get_info()
     motor = MotorController(info["width"], info["height"])
     brain = VisionBrain()
 
-    # Step 1: Self-Minimize & Visual Touches Activation
-    log("Enabling visual touches and minimizing to background...")
+    log("Starting task execution...")
+    VoiceEngine.speak("Starting your task.")
     motor.set_touch_visuals(True)
     motor.press_key("HOME")
     time.sleep(1.0)
 
-    # Step 2: Intent Fast Launch Shortcut
     if check_intent_shortcut(goal):
-        log("Target app recognized. Launched via direct intent.")
+        log("Target app opened directly.")
 
     history = []
     prev_image = None
     stuck_counter = 0
 
-    # Step 3: Main Autonomous Execution Loop
     for step in range(1, max_steps + 1):
         if STOP_REQUESTED:
-            log("Emergency stop requested. Halting immediately.")
+            log("Emergency stop requested. Halting.")
+            VoiceEngine.speak("Task stopped.")
             break
 
-        log(f"Step {step}/{max_steps}: Capturing screen...")
+        cur_w, cur_h = profiler.get_current_dimensions()
+        motor.w, motor.h = cur_w, cur_h
+
+        log(f"Step {step}/{max_steps}: Analyzing screen...")
         current_image = ScreenPipeline.capture_stream(target_width=720)
         
         if current_image is None:
-            log("Screen capture failed. Waiting 1.5s...")
-            time.sleep(1.5)
+            time.sleep(1.2)
             continue
 
-        # Stuck Recovery (Visual Frame Diff Check)
         if prev_image is not None:
             diff = ScreenPipeline.compute_frame_diff(prev_image, current_image)
             if diff < 0.015:
                 stuck_counter += 1
-                log(f"Screen static detected (diff: {diff:.3f}). Stuck count: {stuck_counter}")
+                log(f"Screen static detected. Recovery count: {stuck_counter}")
             else:
                 stuck_counter = 0
 
         if stuck_counter >= 2:
-            log("Screen loop detected! Executing recovery swipe up...")
+            log("Anti-loop recovery triggered.")
             motor.bezier_swipe((0.5, 0.7), (0.5, 0.3))
             stuck_counter = 0
             time.sleep(1.0)
@@ -105,11 +108,10 @@ def run_agent(goal, max_steps=15, callback=None):
 
         prev_image = current_image
 
-        # Query Gemini Vision Brain
         decision = brain.decide_next_action(current_image, goal, history)
         thought = decision.get("thought", "")
         action = decision.get("action", "DONE").upper()
-        log(f"Reasoning: {thought}")
+        log(f"Brain: {thought}")
         log(f"Action: {action}")
 
         history.append({
@@ -121,9 +123,9 @@ def run_agent(goal, max_steps=15, callback=None):
 
         if decision.get("is_complete", False) or action == "DONE":
             log("Goal accomplished successfully!")
+            VoiceEngine.speak("Task complete.")
             break
 
-        # Motor Execution
         if action == "TAP":
             coords = decision.get("coordinates", [0.5, 0.5])
             motor.tap(coords[0], coords[1])
@@ -140,12 +142,3 @@ def run_agent(goal, max_steps=15, callback=None):
         time.sleep(1.2)
 
     log("Session ended.")
-
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Run Mira Astra Agent")
-    parser.add_argument("--goal", type=str, required=True, help="Task to perform")
-    parser.add_argument("--steps", type=int, default=15, help="Max execution steps")
-    args = parser.parse_args()
-
-    run_agent(args.goal, args.steps)
