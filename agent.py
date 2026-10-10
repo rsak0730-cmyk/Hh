@@ -1,127 +1,151 @@
-import argparse
 import os
-import signal
 import sys
 import time
+import subprocess
 from core.device_profiler import DeviceProfiler
-from core.motor_controller import MotorController
 from core.screen_pipeline import ScreenPipeline
+from core.motor_controller import MotorController
 from core.vision_brain import VisionBrain
 
-def run_agent(goal: str, max_steps: int = 15):
-    print("=" * 50)
-    print("🚀 Initializing Mira Astra Autonomous Agent...")
-    print("=" * 50)
+# Global emergency stop flag
+STOP_REQUESTED = False
 
-    # 1. Device profiling
+COMMON_APPS = {
+    "youtube": "com.google.android.youtube",
+    "spotify": "com.spotify.music",
+    "whatsapp": "com.whatsapp",
+    "chrome": "com.android.chrome",
+    "settings": "com.android.settings",
+    "camera": "com.android.camera2",
+    "play store": "com.android.vending",
+    "instagram": "com.instagram.android"
+}
+
+def stop_agent():
+    global STOP_REQUESTED
+    STOP_REQUESTED = True
+
+def launch_package_directly(package_name):
+    cmd = ["monkey", "-p", package_name, "-c", "android.intent.category.LAUNCHER", "1"]
     try:
-        profiler = DeviceProfiler()
-        info = profiler.get_info()
-        print(f"📱 Detected: {info['brand'].upper()} ({info['model']}) | Display: {info['width']}x{info['height']}")
-    except Exception as e:
-        print(f"❌ Device profiling failed. Ensure ADB is connected: {e}")
-        sys.exit(1)
+        subprocess.run(cmd, capture_output=True, check=True)
+    except Exception:
+        try:
+            subprocess.run(["adb", "shell"] + cmd, capture_output=True, check=True)
+        except Exception:
+            pass
 
-    # 2. Motor & Visual indicators setup
-    motor = MotorController(info['width'], info['height'])
+def check_intent_shortcut(goal):
+    lower_goal = goal.lower()
+    for app_name, pkg in COMMON_APPS.items():
+        if f"open {app_name}" in lower_goal or f"launch {app_name}" in lower_goal:
+            launch_package_directly(pkg)
+            time.sleep(1.5)
+            return True
+    return False
+
+def run_agent(goal, max_steps=15, callback=None):
+    global STOP_REQUESTED
+    STOP_REQUESTED = False
+
+    def log(msg):
+        if callback:
+            callback(msg)
+        else:
+            print(f"[Mira Agent] {msg}")
+
+    profiler = DeviceProfiler()
+    info = profiler.get_info()
+    motor = MotorController(info["width"], info["height"])
+    brain = VisionBrain()
+
+    # Step 1: Self-Minimize & Visual Touches Activation
+    log("Enabling visual touches and minimizing to background...")
     motor.set_touch_visuals(True)
-    print("✨ Hardware touch indicators enabled (Animated touch ripples active).")
+    motor.press_key("HOME")
+    time.sleep(1.0)
 
-    # Graceful exit handler on Ctrl+C
-    def cleanup_and_exit(sig=None, frame=None):
-        print("\n🔒 Restoring system touch visuals to default...")
-        motor.set_touch_visuals(False)
-        sys.exit(0)
+    # Step 2: Intent Fast Launch Shortcut
+    if check_intent_shortcut(goal):
+        log("Target app recognized. Launched via direct intent.")
 
-    signal.signal(signal.SIGINT, cleanup_and_exit)
-    signal.signal(signal.SIGTERM, cleanup_and_exit)
-
-    # 3. Vision Brain & Pipeline setup
-    try:
-        brain = VisionBrain()
-    except Exception as e:
-        print(f"❌ Failed to initialize VisionBrain: {e}")
-        motor.set_touch_visuals(False)
-        sys.exit(1)
-
-    pipeline = ScreenPipeline()
     history = []
-    step = 0
+    prev_image = None
     stuck_counter = 0
 
-    try:
-        while step < max_steps:
-            step += 1
-            print(f"\n[Step {step}/{max_steps}] Scanning screen state...")
+    # Step 3: Main Autonomous Execution Loop
+    for step in range(1, max_steps + 1):
+        if STOP_REQUESTED:
+            log("Emergency stop requested. Halting immediately.")
+            break
 
-            frame_before = pipeline.capture_stream()
-            if frame_before is None:
-                print("⚠️ Retrying screen capture in 1s...")
-                time.sleep(1.0)
-                continue
+        log(f"Step {step}/{max_steps}: Capturing screen...")
+        current_image = ScreenPipeline.capture_stream(target_width=720)
+        
+        if current_image is None:
+            log("Screen capture failed. Waiting 1.5s...")
+            time.sleep(1.5)
+            continue
 
-            decision = brain.decide_next_action(frame_before, goal, history)
-
-            thought = decision.get("thought", "Executing step...")
-            action = decision.get("action", "").upper()
-            is_complete = decision.get("is_complete", False)
-
-            print(f"🧠 Thought: {thought}")
-
-            if is_complete or action == "DONE":
-                print("🎯 Goal completed successfully!")
-                break
-
-            if action == "TAP":
-                coords = decision.get("coordinates", [0.5, 0.5])
-                print(f"👉 Executing Centered Tap at: {coords}")
-                motor.tap(coords[0], coords[1])
-            elif action == "SWIPE":
-                sc = decision.get("swipe_coords", [[0.5, 0.7], [0.5, 0.3]])
-                print(f"👆 Executing Natural Bezier Swipe from {sc[0]} to {sc[1]}")
-                motor.bezier_swipe(sc[0], sc[1])
-            elif action == "TYPE":
-                txt = decision.get("text", "")
-                print(f"⌨️ Virtual Typing on keyboard: '{txt}'")
-                motor.type_text(txt)
-            elif action == "KEY":
-                k = decision.get("key", "BACK")
-                print(f"🔘 Pressing System Key: {k}")
-                motor.press_key(k)
+        # Stuck Recovery (Visual Frame Diff Check)
+        if prev_image is not None:
+            diff = ScreenPipeline.compute_frame_diff(prev_image, current_image)
+            if diff < 0.015:
+                stuck_counter += 1
+                log(f"Screen static detected (diff: {diff:.3f}). Stuck count: {stuck_counter}")
             else:
-                print(f"⚠️ Unknown action received: {action}. Defaulting to short wait.")
-                time.sleep(0.5)
+                stuck_counter = 0
 
-            # Settle wait & delta check
-            time.sleep(0.5)
-            frame_after = pipeline.capture_stream()
-            if frame_after is not None:
-                diff = pipeline.compute_frame_diff(frame_before, frame_after)
-                if diff < 0.01 and action not in ["TYPE", "DONE"]:
-                    stuck_counter += 1
-                    print(f"⚠️ Visual delta low ({diff:.4f}). Screen did not change.")
-                    if stuck_counter >= 2:
-                        print("🔄 Stuck detected! Nudging screen via mild scroll...")
-                        motor.bezier_swipe([0.5, 0.6], [0.5, 0.5], steps=3)
-                        stuck_counter = 0
-                else:
-                    stuck_counter = 0
+        if stuck_counter >= 2:
+            log("Screen loop detected! Executing recovery swipe up...")
+            motor.bezier_swipe((0.5, 0.7), (0.5, 0.3))
+            stuck_counter = 0
+            time.sleep(1.0)
+            continue
 
-            history.append({
-                "step": step,
-                "action": action,
-                "thought": thought
-            })
+        prev_image = current_image
 
-    except Exception as err:
-        print(f"\n❌ Runtime error: {err}")
-    finally:
-        cleanup_and_exit()
+        # Query Gemini Vision Brain
+        decision = brain.decide_next_action(current_image, goal, history)
+        thought = decision.get("thought", "")
+        action = decision.get("action", "DONE").upper()
+        log(f"Reasoning: {thought}")
+        log(f"Action: {action}")
+
+        history.append({
+            "step": step,
+            "action": action,
+            "coordinates": decision.get("coordinates"),
+            "thought": thought
+        })
+
+        if decision.get("is_complete", False) or action == "DONE":
+            log("Goal accomplished successfully!")
+            break
+
+        # Motor Execution
+        if action == "TAP":
+            coords = decision.get("coordinates", [0.5, 0.5])
+            motor.tap(coords[0], coords[1])
+        elif action == "SWIPE":
+            scoords = decision.get("swipe_coords", [[0.5, 0.7], [0.5, 0.3]])
+            motor.bezier_swipe(scoords[0], scoords[1])
+        elif action == "TYPE":
+            text = decision.get("text", "")
+            motor.type_text(text)
+        elif action == "KEY":
+            key = decision.get("key", "BACK")
+            motor.press_key(key)
+
+        time.sleep(1.2)
+
+    log("Session ended.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Mira Astra Device-Use Agent")
-    parser.add_argument("--goal", type=str, required=True, help="Command to execute")
-    parser.add_argument("--max-steps", type=int, default=15, help="Maximum steps limit")
+    import argparse
+    parser = argparse.ArgumentParser(description="Run Mira Astra Agent")
+    parser.add_argument("--goal", type=str, required=True, help="Task to perform")
+    parser.add_argument("--steps", type=int, default=15, help="Max execution steps")
     args = parser.parse_args()
 
-    run_agent(args.goal, args.max_steps)
+    run_agent(args.goal, args.steps)
