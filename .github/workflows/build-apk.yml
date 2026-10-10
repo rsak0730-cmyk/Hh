@@ -23,9 +23,10 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Auto-Accept Android SDK Licenses
+      - name: Install Android 15 SDK Platform & Accept Licenses
         run: |
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
 
       - name: Install System Build Tools
         run: |
@@ -39,7 +40,7 @@ jobs:
 
       - name: Build Android Package
         run: |
-          # pexpect auto-accepts interactive prompts inside buildozer
+          # Handles interactive license and download prompts automatically
           python -c '
           import pexpect, sys
           child = pexpect.spawn("buildozer android debug", timeout=1800, encoding="utf-8")
@@ -51,7 +52,7 @@ jobs:
               elif idx == 2:
                   break
               elif idx == 3:
-                  print("Timeout waiting for build step")
+                  print("Timeout during buildozer execution")
                   break
           '
 
