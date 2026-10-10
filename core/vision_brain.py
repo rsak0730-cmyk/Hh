@@ -1,4 +1,5 @@
 import base64
+import io
 import json
 import os
 import re
@@ -10,23 +11,21 @@ SYS_P = """You are Mira Astra, an Android Mobile-Use Agent. Respond ONLY with va
 
 class VisionBrain:
     def __init__(self, api_key=None):
-        self.api_key = api_key or os.environ.get("GEMINI_API_KEY")
+        self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "").strip()
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY is required.")
         self.url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={self.api_key}"
 
-    def decide_next_action(self, image_bytes_or_b64, goal, history):
-        # Convert image to base64 string
-        if isinstance(image_bytes_or_b64, bytes):
-            b64_img = base64.b64encode(image_bytes_or_b64).decode('utf-8')
-        elif isinstance(image_bytes_or_b64, str):
-            b64_img = image_bytes_or_b64
+    def decide_next_action(self, image, goal, history):
+        # Convert image to Base64
+        if isinstance(image, bytes):
+            b64_img = base64.b64encode(image).decode("utf-8")
+        elif isinstance(image, str):
+            b64_img = image
         else:
-            # In case PIL Image is passed
-            import io
             buffer = io.BytesIO()
-            image_bytes_or_b64.save(buffer, format="JPEG", quality=75)
-            b64_img = base64.b64encode(buffer.getvalue()).decode('utf-8')
+            image.save(buffer, format="JPEG", quality=75)
+            b64_img = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
         prompt_text = f"Goal: {goal}\nHistory: {history[-3:] if history else 'None'}\nScreen attached."
 
@@ -57,19 +56,19 @@ class VisionBrain:
 
         for attempt in range(max_retries):
             try:
-                response = requests.post(self.url, headers=headers, json=payload, timeout=25)
-                response.raise_for_status()
-                res_data = response.json()
-                text_content = res_data["candidates"][0]["content"]["parts"][0]["text"]
-                clean_json = re.sub(r"^```(?:json)?\n|\n```$", "", text_content.strip(), flags=re.MULTILINE)
-                return json.loads(clean_json)
+                res = requests.post(self.url, headers=headers, json=payload, timeout=25)
+                res.raise_for_status()
+                data = res.json()
+                raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+                clean = re.sub(r"^```(?:json)?\n|\n```$", "", raw_text.strip(), flags=re.MULTILINE)
+                return json.loads(clean)
             except Exception as e:
                 if attempt < max_retries - 1:
                     time.sleep(backoff)
                     backoff *= 2.0
                 else:
                     return {
-                        "thought": f"API Error: {str(e)}",
+                        "thought": f"API Request Failed: {str(e)}",
                         "action": "KEY",
                         "key": "BACK",
                         "is_complete": False
